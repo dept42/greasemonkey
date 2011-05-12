@@ -9,11 +9,12 @@ function Script(configNode) {
   this._dependhash = null;
 
   this._name = null;
-  this._namespace = null;
+  this._namespace = "";
   this._id = null;
   this._prefroot = null;
   this._description = null;
   this._version = null;
+  this._icon = new ScriptIcon(this);
   this._enabled = true;
   this.needsUninstall = false;
   this._includes = [];
@@ -30,17 +31,27 @@ function Script(configNode) {
 
 Script.prototype = {
   matchesURL: function(url) {
-    function test(page) {
-      return convert2RegExp(page).test(url);
+    function test(glob) {
+      // Do not run in about:blank unless _specifically_ requested.  See #1298
+      if (-1 !== url.indexOf('about:blank')
+          && -1 == glob.indexOf('about:blank')
+      ) {
+        return false;
+      }
+
+      return convert2RegExp(glob).test(url);
     }
 
-    return this._includes.some(test) && !this._excludes.some(test);
+    return GM_isGreasemonkeyable(url)
+        && this._includes.some(test)
+        && !this._excludes.some(test);
   },
 
   _changed: function(event, data) {
     GM_getConfig()._changed(this, event, data);
   },
 
+  get modifiedDate() { return new Date(parseInt(this._modified))  ; },
   get name() { return this._name; },
   get namespace() { return this._namespace; },
   get id() {
@@ -53,6 +64,7 @@ Script.prototype = {
   },
   get description() { return this._description; },
   get version() { return this._version; },
+  get icon() { return this._icon; },
   get enabled() { return this._enabled; },
   set enabled(enabled) { this._enabled = enabled; this._changed("edit-enabled", enabled); },
 
@@ -67,6 +79,7 @@ Script.prototype = {
   get resources() { return this._resources.concat(); },
   get unwrap() { return this._unwrap; },
 
+  get filename() { return this._filename; },
   get file() {
     var file = this._basedirFile;
     file.append(this._filename);
@@ -132,7 +145,7 @@ Script.prototype = {
         || !node.hasAttribute("version")
     ) {
       var parsedScript = GM_getConfig().parse(
-          this.textContent, this._downloadURL, true);
+          this.textContent, GM_uriFromUrl(this._downloadURL), !!this);
 
       this._modified = this.file.lastModifiedTime;
       this._dependhash = GM_sha1(parsedScript._rawMeta);
@@ -175,6 +188,7 @@ Script.prototype = {
     this._name = node.getAttribute("name");
     this._namespace = node.getAttribute("namespace");
     this._description = node.getAttribute("description");
+    this.icon.fileURL = node.getAttribute("icon");
     this._enabled = node.getAttribute("enabled") == true.toString();
   },
 
@@ -241,6 +255,10 @@ Script.prototype = {
       scriptNode.setAttribute("installurl", this._downloadURL);
     }
 
+    if (this.icon.filename) {
+      scriptNode.setAttribute("icon", this.icon.filename);
+    }
+
     return scriptNode;
   },
 
@@ -251,6 +269,7 @@ Script.prototype = {
     var file = GM_scriptDir();
     file.append(name);
     file.createUnique(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0755);
+    this._basedir = file.leafName;
 
     file.append(name + ".user.js");
     file.createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, 0644);
@@ -321,6 +340,8 @@ Script.prototype = {
     var dependhash = GM_sha1(newScript._rawMeta);
     if (dependhash != this._dependhash && !newScript._dependFail) {
       this._dependhash = dependhash;
+      this._icon = newScript._icon
+      this._icon._script = this;
       this._requires = newScript._requires;
       this._resources = newScript._resources;
 
@@ -370,7 +391,9 @@ Script.prototype = {
     return this.allFiles().every(this.fileExists);
   },
 
-  uninstall: function() {
+  uninstall: function(forUpdate) {
+    if ('undefined' == typeof(forUpdate)) forUpdate = false;
+
     if (this._basedirFile.equals(GM_scriptDir())) {
       // if script is in the root, just remove the file
       try {
@@ -387,7 +410,7 @@ Script.prototype = {
       }
     }
 
-    if (GM_prefRoot.getValue("uninstallPreferences")) {
+    if (!forUpdate && GM_prefRoot.getValue("uninstallPreferences")) {
       // Remove saved preferences
       GM_prefRoot.remove(this.prefroot);
     }

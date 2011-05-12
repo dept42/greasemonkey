@@ -159,8 +159,9 @@ function GM_launchApplicationWithDoc(appFile, docFile) {
   process.run(false, args, args.length);
 }
 
-function GM_parseScriptName(sourceUri) {
-  var name = sourceUri.spec;
+function GM_parseScriptName(sourceUrl) {
+  if (!sourceUrl) return '';
+  var name = sourceUrl;
   name = name.substring(0, name.indexOf(".user.js"));
   name = name.substring(name.lastIndexOf("/") + 1);
   return name;
@@ -281,6 +282,11 @@ function GM_compareVersions(aV1, aV2) {
   return 0;
 }
 
+// Remove all children from an element.
+function GM_emptyEl(el) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+
 function GM_isGreasemonkeyable(url) {
   var scheme = Components.classes["@mozilla.org/network/io-service;1"]
                .getService(Components.interfaces.nsIIOService)
@@ -314,11 +320,16 @@ function GM_setEnabled(enabled) {
   GM_prefRoot.setValue("enabled", enabled);
 }
 
-function GM_uriFromUrl(url, baseUrl) {
+function GM_uriFromUrl(url, base) {
   var ioService = Components.classes["@mozilla.org/network/io-service;1"]
                                      .getService(Components.interfaces.nsIIOService);
   var baseUri = null;
-  if (baseUrl) baseUri = GM_uriFromUrl(baseUrl);
+  if (typeof base === "string") {
+    baseUri = GM_uriFromUrl(base);
+  } else if (base) {
+    baseUri = base;
+  }
+
   try {
     return ioService.newURI(url, null, baseUri);
   } catch (e) {
@@ -349,7 +360,7 @@ function GM_sha1(unicode) {
 }
 GM_sha1 = GM_memoize(GM_sha1);
 
-GM_scriptDirCache = null;
+var GM_scriptDirCache = null;
 function GM_scriptDir() {
   if (!GM_scriptDirCache) {
     GM_scriptDirCache = Components
@@ -361,12 +372,10 @@ function GM_scriptDir() {
   return GM_scriptDirCache.clone();
 }
 
-function GM_installUri(uri) {
-  var win = Components.classes['@mozilla.org/appshell/window-mediator;1']
-    .getService(Components.interfaces.nsIWindowMediator)
-    .getMostRecentWindow("navigator:browser");
+function GM_installUri(uri, contentWin) {
+  var win = GM_getBrowserWindow();
   if (win && win.GM_BrowserUI) {
-    win.GM_BrowserUI.startInstallScript(uri);
+    win.GM_BrowserUI.startInstallScript(uri, contentWin);
     return true;
   }
   return false;
@@ -409,16 +418,65 @@ function GM_memoize(func, limit) {
 }
 
 function GM_newUserScript() {
-  var windowWatcher = Components
-    .classes["@mozilla.org/embedcomp/window-watcher;1"]
-    .getService(Components.interfaces.nsIWindowWatcher);
-  windowWatcher.openWindow(
-    window, "chrome://greasemonkey/content/newscript.xul", null,
-    "chrome,dependent,centerscreen,resizable,dialog", null
-  );
+  window.openDialog(
+      "chrome://greasemonkey/content/newscript.xul", null,
+      "chrome,dependent,centerscreen,resizable,dialog");
 }
 
 // Open the add-ons manager and show the installed user scripts.
 if (typeof GM_OpenScriptsMgr == "undefined") {
   function GM_OpenScriptsMgr() { BrowserOpenAddonsMgr('userscripts'); }
+}
+
+function GM_windowId(win) {
+  try {
+    // Do not operate on chrome windows.
+    win.QueryInterface(Components.interfaces.nsIDOMChromeWindow);
+    return null;
+  } catch (e) {
+    // We want this to fail.  Catch is no-op.
+  }
+
+  try {
+    // Dunno why this is necessary, but sometimes we get non-chrome windows
+    // whose locations we cannot access.
+    var href = win.location.href;
+    if (!GM_isGreasemonkeyable(href)) return null;
+  } catch (e) {
+    return null;
+  }
+
+  var domWindowUtils = win
+      .QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+      .getInterface(Components.interfaces.nsIDOMWindowUtils);
+  var windowId;
+  try {
+    windowId = domWindowUtils.currentInnerWindowID;
+  } catch (e) { }
+  if ('undefined' == typeof windowId) {
+    // Firefox <4.0 does not provide this, use the document instead.
+    // (Document is a property of the window, and should let us dig into the
+    // "inner window" rather than always getting the same "outer window", due
+    // to bfcache.  https://developer.mozilla.org/en/Inner_and_outer_windows )
+    return win.document;
+  }
+  return windowId;
+}
+
+function GM_windowIdForEvent(aEvent) {
+  var doc = aEvent.originalTarget;
+  try {
+    doc.QueryInterface(Components.interfaces.nsIDOMHTMLDocument);
+  } catch (e) {
+    return null;
+  }
+
+  return GM_windowId(doc.defaultView);
+}
+
+function GM_getBrowserWindow() {
+  return Components
+     .classes['@mozilla.org/appshell/window-mediator;1']
+     .getService(Components.interfaces.nsIWindowMediator)
+     .getMostRecentWindow("navigator:browser");
 }

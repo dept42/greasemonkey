@@ -8,20 +8,25 @@
 <!ENTITY menu.new.accesskey "U">
 <!ENTITY menu.manage "Hallinnoi skriptejä...">
 <!ENTITY menu.manage.accesskey "H">
-<!ENTITY statusbar.noscripts "Ei asennettuja skriptejä!">
 <!ENTITY statusbar.enabled "Käytössä">
 <!ENTITY statusbar.enabled.accesskey "K">
 <!ENTITY install.title "Greasemonkey-asennus">
-<!ENTITY install.runson "suoritetaan:">
-<!ENTITY install.butnoton "ei suoriteta:">
-<!ENTITY install.warning1 "Haitalliset skriptit voivat loukata yksityisyyttäsi ja toimia puolestasi tietämättäsi.">
-<!ENTITY install.warning2 "Sinun tulisi asentaa skriptejä vain luotettavista lähteistä.">
+<!ENTITY install.runson "ajetaan sivuilla:">
+<!ENTITY install.butnoton "pois lukien sivut:">
+<!ENTITY install.warning1 "Haitalliset skriptit voivat vaarantaa yksityisyytesi ja toimia tietämättäsi.">
+<!ENTITY install.warning2 "Asenna skriptejä vain luetetuista lähteistä.">
 <!ENTITY install.showscriptsource "Näytä skriptin lähdekoodi">
 <!ENTITY install.installbutton "Asenna">
 <!ENTITY newscript.name "Nimi">
 <!ENTITY newscript.namespace "Nimiavaruus">
 <!ENTITY newscript.description "Kuvaus">
-<!ENTITY newscript.includes "Käytä sivuilla (yksi per rivi)">
+<!ENTITY newscript.includes "Ajetaan sivuilla (yksi per rivi)">
 <!ENTITY newscript.excludes "Pois lukien sivut (yksi per rivi)">
-<!ENTITY Uninstall "Poista skripti">
+<!ENTITY options.editor "Tekstieditori">
+<!ENTITY options.changeEditor "Vaihda tekstieditoria">
+<!ENTITY userscripts "Skriptit">
+<!ENTITY Uninstall "Poisto">
 <!ENTITY AlsoUninstallPrefs "Poista myös skriptin asetukset">
+<!ENTITY greasemonkey.noscriptshere "Mitään skripteistä ei ajeta tällä sivulla.">
+<!ENTITY greasemonkey.youhavenoscripts "You don't have any user scripts installed">
+<!ENTITY greasemonkey.getuserscripts "Get user scripts">

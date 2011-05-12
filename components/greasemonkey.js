@@ -9,8 +9,15 @@ const Cu = Components.utils;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
-const appSvc = Cc["@mozilla.org/appshell/appShellService;1"]
-                 .getService(Ci.nsIAppShellService);
+// XPCOMUtils.defineLazyServiceGetter() introduced in FF 3.6
+if (XPCOMUtils.defineLazyServiceGetter) {
+  XPCOMUtils.defineLazyServiceGetter(
+      this, "appSvc", "@mozilla.org/appshell/appShellService;1",
+      "nsIAppShellService");
+} else {
+  appSvc = Cc["@mozilla.org/appshell/appShellService;1"]
+      .getService(Ci.nsIAppShellService);
+}
 
 const gmSvcFilename = Components.stack.filename;
 
@@ -30,6 +37,7 @@ const maxJSVersion = (function getMaxJSVersion() {
 })();
 
 var gStartupHasRun = false;
+var gMenuCommands = [];
 
 function alert(msg) {
   Cc["@mozilla.org/embedcomp/prompt-service;1"]
@@ -103,7 +111,6 @@ GM_GreasemonkeyService.prototype = {
     }
     return this._config;
   },
-  browserWindows: [],
 
   // nsIObserver
   observe: function(aSubject, aTopic, aData) {
@@ -115,34 +122,6 @@ GM_GreasemonkeyService.prototype = {
     }
   },
 
-
-  // gmIGreasemonkeyService
-  registerBrowser: function(browserWin) {
-    var existing;
-
-    for (var i = 0; existing = this.browserWindows[i]; i++) {
-      if (existing == browserWin) {
-        // NOTE: Unlocalised strings
-        throw new Error("Browser window has already been registered.");
-      }
-    }
-
-    this.browserWindows.push(browserWin);
-  },
-
-  unregisterBrowser: function(browserWin) {
-   var existing;
-
-    for (var i = 0; existing = this.browserWindows[i]; i++) {
-      if (existing == browserWin) {
-        this.browserWindows.splice(i, 1);
-        return;
-      }
-    }
-
-    throw new Error("Browser window is not registered.");
-  },
-
   domContentLoaded: function(wrappedContentWin, chromeWin) {
     var url = wrappedContentWin.document.location.href;
     var scripts = this.initScripts(url, wrappedContentWin, chromeWin);
@@ -150,6 +129,41 @@ GM_GreasemonkeyService.prototype = {
     if (scripts.length > 0) {
       this.injectScripts(scripts, url, wrappedContentWin, chromeWin);
     }
+  },
+
+  withAllMenuCommandsForWindowId: function(contentWindowId, callback) {
+    var l = gMenuCommands.length - 1;
+    for (var i = l, command = null; command = gMenuCommands[i]; i--) {
+      if (!contentWindowId
+          || (command.contentWindowId == contentWindowId)
+      ) {
+        callback(i, command);
+      }
+    }
+  },
+
+  contentDestroyed: function(contentWindowId) {
+    if (!contentWindowId) return;
+    this.withAllMenuCommandsForWindowId(null, function(index, command) {
+      var closed = false;
+      try { closed = command.contentWindow.closed; } catch (e) { }
+
+      if (closed || (command.contentWindowId == contentWindowId)) {
+        gMenuCommands.splice(index, 1);
+      }
+    });
+  },
+
+  contentFrozen: function(contentWindowId) {
+    if (!contentWindowId) return;
+    this.withAllMenuCommandsForWindowId(contentWindowId,
+        function(index, command) { command.frozen = true; });
+  },
+
+  contentThawed: function(contentWindowId) {
+    if (!contentWindowId) return;
+    this.withAllMenuCommandsForWindowId(contentWindowId,
+        function(index, command) { command.frozen = false; });
   },
 
   startup: function() {
@@ -165,6 +179,7 @@ GM_GreasemonkeyService.prototype = {
     loader.loadSubScript("chrome://greasemonkey/content/script.js");
     loader.loadSubScript("chrome://greasemonkey/content/scriptrequire.js");
     loader.loadSubScript("chrome://greasemonkey/content/scriptresource.js");
+    loader.loadSubScript("chrome://greasemonkey/content/scripticon.js");
     loader.loadSubScript("chrome://greasemonkey/content/convert2RegExp.js");
     loader.loadSubScript("chrome://greasemonkey/content/miscapis.js");
     loader.loadSubScript("chrome://greasemonkey/content/xmlhttprequester.js");
@@ -173,13 +188,6 @@ GM_GreasemonkeyService.prototype = {
 
   shouldLoad: function(ct, cl, org, ctx, mt, ext) {
     var ret = Ci.nsIContentPolicy.ACCEPT;
-
-    // block content detection of greasemonkey by denying GM
-    // chrome content, unless loaded from chrome
-    if (org && org.scheme != "chrome" && cl.scheme == "chrome" &&
-        cl.host == "greasemonkey") {
-      return Ci.nsIContentPolicy.REJECT_SERVER;
-    }
 
     // don't intercept anything when GM is not enabled
     if (!GM_getEnabled()) {
@@ -192,15 +200,13 @@ GM_GreasemonkeyService.prototype = {
       return ret;
     }
 
-    if (ct == Ci.nsIContentPolicy.TYPE_DOCUMENT &&
-        cl.spec.match(/\.user\.js$/)) {
-
-      dump("shouldload: " + cl.spec + "\n");
-      dump("ignorescript: " + this.ignoreNextScript_ + "\n");
-
+    if ((ct == Ci.nsIContentPolicy.TYPE_DOCUMENT
+         || ct == Ci.nsIContentPolicy.TYPE_SUBDOCUMENT)
+        && cl.spec.match(/\.user\.js$/)
+    ) {
       if (!this.ignoreNextScript_
         && !this.isTempScript(cl)
-        && GM_installUri(cl)
+        && GM_installUri(cl, ctx.contentWindow)
       ) {
         ret = Ci.nsIContentPolicy.REJECT_REQUEST;
       }
@@ -215,7 +221,6 @@ GM_GreasemonkeyService.prototype = {
   },
 
   ignoreNextScript: function() {
-    dump("ignoring next script...\n");
     this.ignoreNextScript_ = true;
   },
 
@@ -271,8 +276,6 @@ GM_GreasemonkeyService.prototype = {
                                                  url);
       resources = new GM_Resources(script);
 
-      sandbox.window = wrappedContentWin;
-      sandbox.document = sandbox.window.document;
       sandbox.unsafeWindow = unsafeContentWin;
 
       // hack XPathResult since that is so commonly used
@@ -294,11 +297,16 @@ GM_GreasemonkeyService.prototype = {
           this, "openInTab", wrappedContentWin, chromeWin);
       sandbox.GM_xmlhttpRequest = GM_hitch(xmlhttpRequester,
                                            "contentStartRequest");
-      sandbox.GM_registerMenuCommand = GM_hitch(this,
-                                                "registerMenuCommand",
-                                                unsafeContentWin);
+      sandbox.GM_registerMenuCommand = GM_hitch(
+          this, "registerMenuCommand", wrappedContentWin, chromeWin, script);
 
-      sandbox.__proto__ = wrappedContentWin;
+      // Re-wrap the window before assigning it to the sandbox.__proto__
+      // This is a workaround for a bug in which the Security Manager
+      // vetoes the use of eval.
+      sandbox.__proto__ = new XPCNativeWrapper(unsafeContentWin);
+
+      Components.utils.evalInSandbox(
+          "var document = window.document;", sandbox);
 
       var contents = script.textContent;
 
@@ -322,28 +330,45 @@ GM_GreasemonkeyService.prototype = {
                          "\n";
       if (!script.unwrap)
         scriptSrc = "(function(){"+ scriptSrc +"})()";
-      if (!this.evalInSandbox(scriptSrc, url, sandbox, script) && script.unwrap)
+      if (!this.evalInSandbox(scriptSrc, sandbox, script) && script.unwrap)
         this.evalInSandbox("(function(){"+ scriptSrc +"})()",
-                           url, sandbox, script); // wrap anyway on early return
+            sandbox, script); // wrap anyway on early return
     }
   },
 
-  registerMenuCommand: function(unsafeContentWin, commandName, commandFunc,
-                                accelKey, accelModifiers, accessKey) {
+  registerMenuCommand: function(
+      wrappedContentWin, chromeWin, script,
+      commandName, commandFunc, accessKey, unused, accessKey2) {
     if (!GM_apiLeakCheck("GM_registerMenuCommand")) {
       return;
     }
 
-    var command = {name: commandName,
-                   accelKey: accelKey,
-                   accelModifiers: accelModifiers,
-                   accessKey: accessKey,
-                   doCommand: commandFunc,
-                   window: unsafeContentWin };
-
-    for (var i = 0; i < this.browserWindows.length; i++) {
-      this.browserWindows[i].registerMenuCommand(command);
+    if (wrappedContentWin.top != wrappedContentWin) {
+      // Only register menu commands for the top level window.
+      return;
     }
+
+    // Legacy support: if all five parameters were specified, (from when two
+    // were for accelerators) use the last one as the access key.
+    if ('undefined' != typeof accessKey2) {
+      accessKey = accessKey2;
+    }
+
+    if (accessKey
+        && (("string" != typeof accessKey) || (accessKey.length != 1))
+    ) {
+      throw new Error('Error with menu command "'
+          + commandName + '": accessKey must be a single character');
+    }
+
+    var command = {
+        name: commandName,
+        accessKey: accessKey,
+        commandFunc: commandFunc,
+        contentWindow: wrappedContentWin,
+        contentWindowId: GM_windowId(wrappedContentWin),
+        frozen: false};
+    gMenuCommands.push(command);
   },
 
   openInTab: function(safeContentWin, chromeWin, url) {
@@ -353,6 +378,7 @@ GM_GreasemonkeyService.prototype = {
 
     var newTab = chromeWin.openNewTabWith(
       url, safeContentWin.document, null, null, null, null);
+    if (!newTab) return;  // See: #1275
     // Source:
     // http://mxr.mozilla.org/mozilla-central/source/browser/base/content/browser.js#4448
     var newWindow = chromeWin.gBrowser
@@ -363,7 +389,7 @@ GM_GreasemonkeyService.prototype = {
     return newWindow;
   },
 
-  evalInSandbox: function(code, codebase, sandbox, script) {
+  evalInSandbox: function(code, sandbox, script) {
     if (!(Components.utils && Components.utils.Sandbox)) {
       var e = new Error("Could not create sandbox.");
       GM_logError(e, 0, e.fileName, e.lineNumber);
@@ -380,8 +406,8 @@ GM_GreasemonkeyService.prototype = {
 
         // try to find the line of the actual error line
         var line = e && e.lineNumber;
-        if (4294967295 == line) {
-          // Line number is reported as max int in edge cases.  Sometimes
+        if (line > 0xFFFFFF00) {
+          // Line number is reported as a huge int in edge cases.  Sometimes
           // the right one is in the "location", instead.  Look there.
           if (e.location && e.location.lineNumber) {
             line = e.location.lineNumber;
@@ -415,13 +441,13 @@ GM_GreasemonkeyService.prototype = {
     return true; // did not need a (function() {...})() enclosure.
   },
 
-  findError: function(script, lineNumber){
+  findError: function(script, lineNumber) {
     var start = 0;
     var end = 1;
 
     for (var i = 0; i < script.offsets.length; i++) {
       end = script.offsets[i];
-      if (lineNumber < end) {
+      if (lineNumber <= end) {
         return {
           uri: script.requires[i].fileURL,
           lineNumber: (lineNumber - start)

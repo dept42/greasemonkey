@@ -117,13 +117,10 @@ Config.prototype = {
     configStream.close();
   },
 
-  parse: function(source, uri, updating) {
+  parse: function(source, uri, updateScript) {
     var script = new Script();
 
-    if (uri) {
-      script._downloadURL = uri.spec;
-      script._enabled = true;
-    }
+    if (uri) script._downloadURL = uri.spec;
 
     // read one line at a time looking for start meta delimiter or EOF
     var lines = source.match(/.+/g);
@@ -178,6 +175,20 @@ Config.prototype = {
           case "exclude":
             script._excludes.push(value);
             break;
+          case "icon":
+            script._rawMeta += header + '\0' + value + '\0';
+            try {
+              script.icon.metaVal = value;
+            } catch (e) {
+              if (updateScript) {
+                script._dependFail = true;
+              } else if (script.icon.dataUriError) {
+                throw new Error(e.message);
+              } else {
+                throw new Error('Failed to get @icon '+ value);
+              }
+            }
+            break;
           case "require":
             try {
               var reqUri = GM_uriFromUrl(value, uri);
@@ -186,7 +197,7 @@ Config.prototype = {
               script._requires.push(scriptRequire);
               script._rawMeta += header + '\0' + value + '\0';
             } catch (e) {
-              if (updating) {
+              if (updateScript) {
                 script._dependFail = true;
               } else {
                 throw new Error('Failed to @require '+ value);
@@ -219,7 +230,7 @@ Config.prototype = {
               script._resources.push(scriptResource);
               script._rawMeta += header + '\0' + resName + '\0' + resUri.spec + '\0';
             } catch (e) {
-              if (updating) {
+              if (updateScript) {
                 script._dependFail = true;
               } else {
                 throw new Error('Failed to get @resource '+ resName +' from '+
@@ -232,7 +243,10 @@ Config.prototype = {
     }
 
     // if no meta info, default to reasonable values
-    if (!script._name && uri) script._name = GM_parseScriptName(uri);
+    if (!script._name) {
+      script._name = GM_parseScriptName((uri && uri.spec)
+          || (updateScript && updateScript.filename));
+    }
     if (!script._namespace && uri) script._namespace = uri.host;
     if (!script._description) script._description = "";
     if (!script._version) script._version = "";
@@ -242,19 +256,22 @@ Config.prototype = {
   },
 
   install: function(script) {
-    GM_log("> Config.install");
-
     var existingIndex = this._find(script);
     if (existingIndex > -1) {
       // save the old script's state
       script._enabled = this._scripts[existingIndex].enabled;
 
-      // unintall the old script
-      this.uninstall(this._scripts[existingIndex]);
+      // uninstall the old script
+      this.uninstall(this._scripts[existingIndex], true);
     }
 
     script._initFile(script._tempFile);
     script._tempFile = null;
+
+    // if icon had to be downloaded, then move the file
+    if (script.icon.hasDownloadURL()) {
+      script.icon._initFile();
+    }
 
     for (var i = 0; i < script._requires.length; i++) {
       script._requires[i]._initFile();
@@ -268,15 +285,20 @@ Config.prototype = {
     script._dependhash = GM_sha1(script._rawMeta);
 
     this._scripts.push(script);
-    this._changed(script, "install", null);
 
-    GM_log("< Config.install");
+    if (existingIndex > -1) {
+      this.move(script, existingIndex - this._scripts.length + 1);
+    }
+
+    this._changed(script, "install", existingIndex);
   },
 
-  uninstall: function(script) {
+  uninstall: function(script, forUpdate) {
+    if ('undefined' == typeof(forUpdate)) forUpdate = false;
+
     var idx = this._find(script);
     this._scripts.splice(idx, 1);
-    script.uninstall();
+    script.uninstall(forUpdate);
   },
 
   /**
@@ -337,10 +359,11 @@ Config.prototype = {
 
     for (var i = 0, script; script = scripts[i]; i++) {
       if (0 == script.pendingExec.length) {
+        var oldScriptId = new String(script.id);
         var parsedScript = this.parse(
-            script.textContent, script._downloadURL, true);
+            script.textContent, GM_uriFromUrl(script._downloadURL), !!script);
         script.updateFromNewScript(parsedScript, safeWin, chromeWin);
-        this._changed(script, "modified", null, true);
+        this._changed(script, "modified", oldScriptId, true);
       } else {
         // We are already downloading dependencies for this script
         // so add its window to the list
@@ -356,19 +379,13 @@ Config.prototype = {
    * any necessary upgrades.
    */
   _updateVersion: function() {
-    GM_log("> GM_updateVersion");
-
     // this is the last version which has been run at least once
     var initialized = GM_prefRoot.getValue("version", "0.0");
 
     if ("0.0" == initialized) {
       // this is the first launch.  show the welcome screen.
 
-      // find an open window.
-      var windowManager = Components
-           .classes['@mozilla.org/appshell/window-mediator;1']
-           .getService(Components.interfaces.nsIWindowMediator);
-      var chromeWin = windowManager.getMostRecentWindow("navigator:browser");
+      var chromeWin = GM_getBrowserWindow();
       // if we found it, use it to open a welcome tab
       if (chromeWin.gBrowser) {
         // the setTimeout makes sure we do not execute too early -- sometimes
@@ -396,8 +413,6 @@ Config.prototype = {
          GM_prefRoot.setValue("version", addon.version);
       });
     }
-
-    GM_log("< GM_updateVersion");
   },
 
   /**
